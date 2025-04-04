@@ -6,7 +6,7 @@ A Python tool to extract and analyze protein-protein interfaces from PDB structu
 
 ```bash
 # Clone this repository
-git clone https://github.com/yourusername/extract_ppi.git
+git clone https://github.com/Medbravo/extract_ppi.git
 cd extract_ppi
 
 # Install dependencies
