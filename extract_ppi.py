@@ -4,10 +4,13 @@ import sys
 import argparse
 from pathlib import Path
 import numpy as np
-from collections import defaultdict
+from collections import defaultdict, Counter
 from scipy.spatial import cKDTree
 from Bio.PDB import PDBParser, Entity
 from Bio.PDB.PDBList import PDBList
+from Bio import SeqIO
+import subprocess
+import re
 
 def download_pdb(pdb_id, pdb_dir):
     """Download PDB file from the PDB database if not already present."""
@@ -30,7 +33,7 @@ def get_experimental_method(structure):
         return header['structure_method']
     return "UNKNOWN"
 
-def extract_ppi(pdb_file, distance_threshold=2.5):
+def extract_ppi(pdb_file, distance_threshold=5):
     """Extract protein-protein interface residues based on distance threshold."""
     parser = PDBParser(QUIET=True)
     structure = parser.get_structure("complex", pdb_file)
@@ -126,33 +129,337 @@ def extract_ppi(pdb_file, distance_threshold=2.5):
     
     return formatted_interfaces
 
+def retrieve_binders_fromPDB(target_seq_file, target_name, pdb_seqres_db, min_seq_id=0.5, cov_mode=2, cov_threshold=0):
+    """
+    Retrieve all protein binders for a given target from PDB.
+    
+    Args:
+        target_seq_file: Path to the cropped target sequence file (fasta)
+        target_name: Name of the target protein (e.g., 'egfr')
+        pdb_seqres_db: Path to the mmseqs database of PDB sequences
+        min_seq_id: Minimum sequence identity threshold (default: 0.5)
+        cov_mode: Coverage mode for mmseqs (default: 2)
+        cov_threshold: Coverage threshold (default: 0)
+        
+    Returns:
+        Path to the output fasta file containing all potential binder sequences
+    """
+    # Create output directory if it doesn't exist
+    out_dir = Path('out')
+    out_dir.mkdir(exist_ok=True)
+    
+    # Create temp directory if it doesn't exist
+    tmp_dir = Path('tmp')
+    tmp_dir.mkdir(exist_ok=True)
+    
+    # Output file paths
+    result_file = out_dir / 'result.m8'
+    output_fasta = out_dir / f'{target_name}_protein_complexes.fasta'
+    
+    # Run mmseqs easy-search to find similar sequences
+    cmd = [
+        'mmseqs', 'easy-search', 
+        str(target_seq_file), 
+        str(pdb_seqres_db), 
+        str(result_file), 
+        str(tmp_dir),
+        '--min-seq-id', str(min_seq_id),
+        '--cov-mode', str(cov_mode),
+        '-c', str(cov_threshold)
+    ]
+    
+    try:
+        subprocess.run(cmd, check=True)
+    except subprocess.CalledProcessError as e:
+        print(f"Error running mmseqs: {e}")
+        return None
+    
+    # Parse the result file to get target chains
+    target_chains = set()
+    with open(result_file, 'r') as f:
+        for line in f:
+            parts = line.strip().split('\t')
+            if len(parts) >= 2:
+                target_chains.add(parts[1])  # Format: 1IVO_A
+    
+    # Parse the PDB sequence database to extract binders
+    pdb_seqres_file = str(pdb_seqres_db).replace('_db', '.txt')
+    
+    # Dictionary to keep track of unique sequences and their header information
+    unique_sequences = {}
+    chain_headers = {}
+    
+    # First pass: collect all chains, their sequences, and header information
+    with open(pdb_seqres_file, 'r') as f:
+        current_id = None
+        current_header = ""
+        current_seq = ""
+        
+        for line in f:
+            if line.startswith('>'):
+                if current_id and current_seq:
+                    pdb_chain_id = current_id.split()[0]  # Get just the chain ID part (e.g., "1IVO_A")
+                    unique_sequences[pdb_chain_id] = current_seq
+                    chain_headers[pdb_chain_id] = current_header
+                
+                current_header = line.strip()[1:]  # Store the full header without '>'
+                current_id = current_header.split()[0]  # Extract PDB ID and chain (e.g., "1IVO_A")
+                current_seq = ""
+            else:
+                current_seq += line.strip()
+        
+        # Add the last sequence
+        if current_id and current_seq:
+            pdb_chain_id = current_id.split()[0]
+            unique_sequences[pdb_chain_id] = current_seq
+            chain_headers[pdb_chain_id] = current_header
+    
+    # Extract PDB IDs that contain target chains
+    pdb_ids_with_target = set()
+    for chain_id in target_chains:
+        pdb_id = chain_id.split('_')[0]
+        pdb_ids_with_target.add(pdb_id)
+    
+    # Dictionary to track unique sequences for output
+    output_sequences = {}
+    
+    # Second pass: write binder sequences to output file
+    with open(output_fasta, 'w') as outfile:
+        for chain_id, sequence in unique_sequences.items():
+            pdb_id, chain_num = chain_id.split('_')
+            
+            # Check if this PDB has at least one chain matching the target
+            if pdb_id in pdb_ids_with_target:
+                # Skip chains that match the target
+                if chain_id in target_chains:
+                    continue
+                
+                # Check if sequence is already in our output collection
+                if sequence in output_sequences:
+                    continue
+                
+                # Add to output sequences
+                output_sequences[sequence] = chain_id
+                
+                # Get the original header information
+                header_info = chain_headers[chain_id]
+                
+                # Extract description part (everything after the first space)
+                if ' ' in header_info:
+                    description = header_info[header_info.index(' ')+1:]
+                else:
+                    description = ""
+                
+                # Write to output file with description preserved
+                if description:
+                    outfile.write(f">{pdb_id}_{chain_num}|{pdb_id}|{chain_num} {description}\n")
+                else:
+                    outfile.write(f">{pdb_id}_{chain_num}|{pdb_id}|{chain_num}\n")
+                outfile.write(f"{sequence}\n")
+    
+    return str(output_fasta)
+
+def confirm_experimental_binding_and_add_interface(target_name, pdb_dir='./pdbs', distance_threshold=2.5):
+    """
+    Confirm experimental binding and add interface information to the protein complexes file.
+    
+    Args:
+        target_name: Name of the target protein (e.g., 'egfr')
+        pdb_dir: Directory to store PDB files
+        distance_threshold: Distance threshold for interface detection in Angstroms
+        
+    Returns:
+        Path to the updated fasta file
+    """
+    # Create directories if they don't exist
+    out_dir = Path('out')
+    out_dir.mkdir(exist_ok=True)
+    
+    pdb_dir_path = Path(pdb_dir)
+    pdb_dir_path.mkdir(exist_ok=True)
+    
+    # Input and output file paths
+    input_fasta = out_dir / f'{target_name}_protein_complexes.fasta'
+    
+    # Dictionary to store updated entries
+    updated_entries = {}
+    
+    # Read the input fasta file and store descriptions
+    records = []
+    descriptions = {}
+    protein_names = {}
+    
+    with open(input_fasta, 'r') as f:
+        for line in f:
+            if line.startswith('>'):
+                header = line.strip()[1:]  # Remove the '>' character
+                record_id = header.split()[0]  # Get the ID part before the first space
+                
+                # Store description (everything after the ID)
+                if ' ' in header:
+                    full_desc = header[header.index(' ')+1:]
+                    descriptions[record_id] = full_desc
+                    
+                    # Extract protein name (last part after "length:XX")
+                    if "length:" in full_desc and "  " in full_desc:
+                        parts = full_desc.split("  ")
+                        if len(parts) > 1:
+                            protein_names[record_id] = parts[-1].strip()
+                        else:
+                            protein_names[record_id] = ""
+                    else:
+                        protein_names[record_id] = ""
+                else:
+                    descriptions[record_id] = ""
+                    protein_names[record_id] = ""
+                
+                record = {'id': record_id, 'seq': ''}
+                records.append(record)
+            else:
+                records[-1]['seq'] += line.strip()
+    
+    # Process each record
+    for record in records:
+        record_id = record['id']
+        sequence = record['seq']
+        description = descriptions.get(record_id, "")
+        protein_name = protein_names.get(record_id, "")
+        
+        # Parse the record ID to get PDB ID
+        parts = record_id.split('|')
+        pdb_chain = parts[0]
+        pdb_id = parts[1]
+        chain_id = parts[2]
+        
+        try:
+            # Download the PDB file
+            pdb_file = download_pdb(pdb_id, str(pdb_dir_path))
+            
+            # Extract interfaces
+            interfaces = extract_ppi(pdb_file, distance_threshold=distance_threshold)
+            
+            # Find interfaces involving this chain
+            interface_found = False
+            for interface in interfaces:
+                interface_parts = interface.split('|')
+                chains = interface_parts[0].split('_')
+                
+                # Check if this chain is in the interface
+                if chain_id in chains:
+                    # Get the partner chain
+                    partner_chain = chains[1] if chains[0] == chain_id else chains[0]
+                    
+                    # Get the experimental method
+                    exp_method = interface_parts[2].replace('EXP_', '')
+                    
+                    # Get the hotspot residues
+                    if chains[0] == chain_id:
+                        chain_hotspots = interface_parts[3]
+                        partner_hotspots = interface_parts[4]
+                    else:
+                        chain_hotspots = interface_parts[4]
+                        partner_hotspots = interface_parts[3]
+                    
+                    # Create updated entry with protein name followed by interface information
+                    if protein_name:
+                        updated_id = f"{pdb_chain}|{pdb_id}|{chain_id}|{protein_name}|EXP_{exp_method}|{partner_hotspots}|{chain_hotspots}"
+                    else:
+                        updated_id = f"{pdb_chain}|{pdb_id}|{chain_id}|EXP_{exp_method}|{partner_hotspots}|{chain_hotspots}"
+                    
+                    updated_entries[record_id] = (updated_id, sequence)
+                    interface_found = True
+                    break
+            
+            # If no interface was found, keep the original entry with protein name
+            if not interface_found:
+                if protein_name:
+                    updated_entries[record_id] = (f"{pdb_chain}|{pdb_id}|{chain_id}|{protein_name}", sequence)
+                else:
+                    updated_entries[record_id] = (record_id, sequence)
+                
+        except Exception as e:
+            print(f"Error processing PDB {pdb_id}: {str(e)}")
+            # Keep the original entry if there's an error
+            if protein_name:
+                updated_entries[record_id] = (f"{pdb_chain}|{pdb_id}|{chain_id}|{protein_name}", sequence)
+            else:
+                updated_entries[record_id] = (record_id, sequence)
+    
+    # Write updated entries to output file
+    with open(input_fasta, 'w') as outfile:
+        for original_id, (updated_id, sequence) in updated_entries.items():
+            outfile.write(f">{updated_id}\n")
+            outfile.write(f"{sequence}\n")
+    
+    return str(input_fasta)
+
 def main():
     parser = argparse.ArgumentParser(description='Extract protein-protein interfaces from PDB structures')
-    parser.add_argument('pdb_id', help='PDB identifier')
+    parser.add_argument('--mode', type=str, choices=['ppi', 'retrieve_binders', 'confirm_binding'],
+                        default='ppi', help='Mode of operation')
+    parser.add_argument('--pdb_id', type=str, help='PDB identifier (for ppi mode)')
+    parser.add_argument('--target_seq', type=str, help='Target sequence file (for retrieve_binders mode)')
+    parser.add_argument('--target_name', type=str, help='Target name (for retrieve_binders and confirm_binding modes)')
+    parser.add_argument('--pdb_seqres_db', type=str, help='Path to PDB sequence database (for retrieve_binders mode)')
     parser.add_argument('--pdb_dir', type=str, default='./pdbs', 
                         help='Directory to store PDB files (default: ./pdbs)')
-    parser.add_argument('--distance', type=float, default=4.0,
-                        help='Distance threshold for interface detection (default: 4.0)')
+    parser.add_argument('--distance', type=float, default=2.5,
+                        help='Distance threshold for interface detection in Angstroms (default: 2.5)')
+    parser.add_argument('--min_seq_id', type=float, default=0.5,
+                        help='Minimum sequence identity for mmseqs (default: 0.5)')
     
     args = parser.parse_args()
     
-    # Create PDB directory if it doesn't exist
-    pdb_dir = Path(args.pdb_dir)
-    pdb_dir.mkdir(exist_ok=True)
-    
-    pdb_id = args.pdb_id.upper()
-    
-    try:
-        # Pass the pdb_dir to the download function
-        pdb_file = download_pdb(pdb_id, str(pdb_dir))
-        interfaces = extract_ppi(pdb_file, distance_threshold=args.distance)
+    if args.mode == 'ppi':
+        if not args.pdb_id:
+            parser.error("--pdb_id is required when mode is 'ppi'")
         
-        for interface in interfaces:
-            print(f">{interface}")
+        # Create PDB directory if it doesn't exist
+        pdb_dir = Path(args.pdb_dir)
+        pdb_dir.mkdir(exist_ok=True)
+        
+        pdb_id = args.pdb_id.upper()
+        
+        try:
+            # Pass the pdb_dir to the download function
+            pdb_file = download_pdb(pdb_id, str(pdb_dir))
+            interfaces = extract_ppi(pdb_file, distance_threshold=args.distance)
             
-    except Exception as e:
-        print(f"Error processing PDB {pdb_id}: {str(e)}")
-        sys.exit(1)
+            for interface in interfaces:
+                print(f">{interface}")
+                
+        except Exception as e:
+            print(f"Error processing PDB {pdb_id}: {str(e)}")
+            sys.exit(1)
+    
+    elif args.mode == 'retrieve_binders':
+        if not args.target_seq or not args.target_name or not args.pdb_seqres_db:
+            parser.error("--target_seq, --target_name, and --pdb_seqres_db are required when mode is 'retrieve_binders'")
+        
+        output_file = retrieve_binders_fromPDB(
+            args.target_seq,
+            args.target_name,
+            args.pdb_seqres_db,
+            min_seq_id=args.min_seq_id
+        )
+        
+        if output_file:
+            print(f"Binder sequences written to: {output_file}")
+        else:
+            print("Failed to retrieve binders")
+            sys.exit(1)
+    
+    elif args.mode == 'confirm_binding':
+        if not args.target_name:
+            parser.error("--target_name is required when mode is 'confirm_binding'")
+        
+        output_file = confirm_experimental_binding_and_add_interface(
+            args.target_name,
+            pdb_dir=args.pdb_dir,
+            distance_threshold=args.distance
+        )
+        
+        print(f"Updated complexes file with interface information: {output_file}")
 
 if __name__ == "__main__":
     main()
