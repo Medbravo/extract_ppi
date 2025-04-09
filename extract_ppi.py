@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 from collections import defaultdict, Counter
 from scipy.spatial import cKDTree
-from Bio.PDB import PDBParser, Entity
+from Bio.PDB import PDBParser, Entity, MMCIFParser
 from Bio.PDB.PDBList import PDBList
 from Bio import SeqIO
 import subprocess
@@ -14,14 +14,24 @@ import re
 
 def download_pdb(pdb_id, pdb_dir):
     """Download PDB file from the PDB database if not already present."""
-    # Check if file already exists
-    expected_filename = f"pdb{pdb_id.lower()}.ent"
-    file_path = Path(pdb_dir) / expected_filename
+    # Check if file already exists with any of the common extensions
+    possible_filenames = [
+        f"{pdb_id}.pdb",
+        f"{pdb_id}.ent",
+        f"{pdb_id}.cif",
+        f"{pdb_id.lower()}.ent",
+        f"{pdb_id.lower()}.pdb",
+        f"{pdb_id.lower()}.cif"
+    ]
     
-    if file_path.exists():
-        return str(file_path)
+    for filename in possible_filenames:
+        file_path = Path(pdb_dir) / filename
+        if file_path.exists():
+            print(f"Found existing PDB file: {file_path}")
+            return str(file_path)
     
     # Download if not exists
+    print(f"Downloading PDB structure '{pdb_id}'...")
     pdb_list = PDBList()
     filename = pdb_list.retrieve_pdb_file(pdb_id, file_format="pdb", pdir=pdb_dir)
     return filename
@@ -35,99 +45,108 @@ def get_experimental_method(structure):
 
 def extract_ppi(pdb_file, distance_threshold=5):
     """Extract protein-protein interface residues based on distance threshold."""
-    parser = PDBParser(QUIET=True)
-    structure = parser.get_structure("complex", pdb_file)
-    model = structure[0]
-    
-    # Get experimental method
-    exp_method = get_experimental_method(structure)
-    
-    # Create a dictionary to hold chains and their atoms
-    chain_atoms = {}
-    chain_residues = {}
-    
-    # Collect atoms and residues for each chain
-    for chain in model:
-        chain_id = chain.get_id()
-        chain_atoms[chain_id] = []
-        chain_residues[chain_id] = {}
+    # Use the appropriate parser based on file extension
+    if pdb_file.lower().endswith('.cif'):
+        parser = MMCIFParser(QUIET=True)
+    else:
+        parser = PDBParser(QUIET=True)
         
-        for residue in chain:
-            # Skip non-amino acid residues (like water or ligands)
-            if residue.get_id()[0] != " ":
-                continue
+    try:
+        structure = parser.get_structure("complex", pdb_file)
+        model = structure[0]
+        
+        # Get experimental method
+        exp_method = get_experimental_method(structure)
+        
+        # Create a dictionary to hold chains and their atoms
+        chain_atoms = {}
+        chain_residues = {}
+        
+        # Collect atoms and residues for each chain
+        for chain in model:
+            chain_id = chain.get_id()
+            chain_atoms[chain_id] = []
+            chain_residues[chain_id] = {}
             
-            res_id = residue.get_id()[1]
-            chain_residues[chain_id][res_id] = residue
-            
-            for atom in residue:
-                chain_atoms[chain_id].append((atom, residue))
-    
-    # Find interfaces between all chains
-    chain_interfaces = {}
-    
-    for chain1_id in chain_atoms:
-        for chain2_id in chain_atoms:
-            if chain1_id >= chain2_id:  # Skip self-interactions and duplicates
-                continue
+            for residue in chain:
+                # Skip non-amino acid residues (like water or ligands)
+                if residue.get_id()[0] != " ":
+                    continue
                 
-            interface_key = f"{chain1_id}_{chain2_id}"
-            chain_interfaces[interface_key] = {"chain1": set(), "chain2": set()}
-            
-            # Create arrays of atom coordinates for each chain
-            atoms1 = [(atom.get_coord(), i) for i, (atom, _) in enumerate(chain_atoms[chain1_id])]
-            atoms2 = [(atom.get_coord(), i) for i, (atom, _) in enumerate(chain_atoms[chain2_id])]
-            
-            if not atoms1 or not atoms2:
-                continue
+                res_id = residue.get_id()[1]
+                chain_residues[chain_id][res_id] = residue
                 
-            coords1 = np.array([a[0] for a in atoms1])
-            coords2 = np.array([a[0] for a in atoms2])
-            
-            # Use KDTree to find all pairs of atoms within the distance threshold
-            tree1 = cKDTree(coords1)
-            tree2 = cKDTree(coords2)
-            
-            pairs = tree1.query_ball_tree(tree2, distance_threshold)
-            
-            # Process each interaction
-            for i, close_indices in enumerate(pairs):
-                if close_indices:  # If there are interactions
-                    atom1_idx = atoms1[i][1]
-                    residue1 = chain_atoms[chain1_id][atom1_idx][1]
-                    res1_id = residue1.get_id()[1]
-                    chain_interfaces[interface_key]["chain1"].add(res1_id)
+                for atom in residue:
+                    chain_atoms[chain_id].append((atom, residue))
+        
+        # Find interfaces between all chains
+        chain_interfaces = {}
+        
+        for chain1_id in chain_atoms:
+            for chain2_id in chain_atoms:
+                if chain1_id >= chain2_id:  # Skip self-interactions and duplicates
+                    continue
                     
-                    for j in close_indices:
-                        atom2_idx = atoms2[j][1]
-                        residue2 = chain_atoms[chain2_id][atom2_idx][1]
-                        res2_id = residue2.get_id()[1]
-                        chain_interfaces[interface_key]["chain2"].add(res2_id)
-    
-    # Format the interfaces for output
-    formatted_interfaces = []
-    
-    for interface_key, interface in chain_interfaces.items():
-        chain1_id, chain2_id = interface_key.split("_")
+                interface_key = f"{chain1_id}_{chain2_id}"
+                chain_interfaces[interface_key] = {"chain1": set(), "chain2": set()}
+                
+                # Create arrays of atom coordinates for each chain
+                atoms1 = [(atom.get_coord(), i) for i, (atom, _) in enumerate(chain_atoms[chain1_id])]
+                atoms2 = [(atom.get_coord(), i) for i, (atom, _) in enumerate(chain_atoms[chain2_id])]
+                
+                if not atoms1 or not atoms2:
+                    continue
+                    
+                coords1 = np.array([a[0] for a in atoms1])
+                coords2 = np.array([a[0] for a in atoms2])
+                
+                # Use KDTree to find all pairs of atoms within the distance threshold
+                tree1 = cKDTree(coords1)
+                tree2 = cKDTree(coords2)
+                
+                pairs = tree1.query_ball_tree(tree2, distance_threshold)
+                
+                # Process each interaction
+                for i, close_indices in enumerate(pairs):
+                    if close_indices:  # If there are interactions
+                        atom1_idx = atoms1[i][1]
+                        residue1 = chain_atoms[chain1_id][atom1_idx][1]
+                        res1_id = residue1.get_id()[1]
+                        chain_interfaces[interface_key]["chain1"].add(res1_id)
+                        
+                        for j in close_indices:
+                            atom2_idx = atoms2[j][1]
+                            residue2 = chain_atoms[chain2_id][atom2_idx][1]
+                            res2_id = residue2.get_id()[1]
+                            chain_interfaces[interface_key]["chain2"].add(res2_id)
         
-        # Format the interface residues for chain 1
-        chain1_hotspots = []
-        for res_id in sorted(interface["chain1"]):
-            residue = chain_residues[chain1_id][res_id]
-            res_name = residue.get_resname()
-            chain1_hotspots.append(f"{res_name}{res_id}")
+        # Format the interfaces for output
+        formatted_interfaces = []
         
-        # Format the interface residues for chain 2
-        chain2_hotspots = []
-        for res_id in sorted(interface["chain2"]):
-            residue = chain_residues[chain2_id][res_id]
-            res_name = residue.get_resname()
-            chain2_hotspots.append(f"{res_name}{res_id}")
+        for interface_key, interface in chain_interfaces.items():
+            chain1_id, chain2_id = interface_key.split("_")
+            
+            # Format the interface residues for chain 1
+            chain1_hotspots = []
+            for res_id in sorted(interface["chain1"]):
+                residue = chain_residues[chain1_id][res_id]
+                res_name = residue.get_resname()
+                chain1_hotspots.append(f"{res_name}{res_id}")
+            
+            # Format the interface residues for chain 2
+            chain2_hotspots = []
+            for res_id in sorted(interface["chain2"]):
+                residue = chain_residues[chain2_id][res_id]
+                res_name = residue.get_resname()
+                chain2_hotspots.append(f"{res_name}{res_id}")
+            
+            formatted_interface = f"{chain1_id}_{chain2_id}|{pdb_file}|EXP_{exp_method}|{' '.join(chain1_hotspots)}|{' '.join(chain2_hotspots)}"
+            formatted_interfaces.append(formatted_interface)
         
-        formatted_interface = f"{chain1_id}_{chain2_id}|{pdb_file}|EXP_{exp_method}|{' '.join(chain1_hotspots)}|{' '.join(chain2_hotspots)}"
-        formatted_interfaces.append(formatted_interface)
-    
-    return formatted_interfaces
+        return formatted_interfaces
+    except Exception as e:
+        print(f"Error parsing file {pdb_file}: {e}")
+        return []
 
 def retrieve_binders_fromPDB(target_seq_file, target_name, pdb_seqres_db, min_seq_id=0.5, cov_mode=2, cov_threshold=0):
     """
@@ -425,8 +444,11 @@ def main():
             pdb_file = download_pdb(pdb_id, str(pdb_dir))
             interfaces = extract_ppi(pdb_file, distance_threshold=args.distance)
             
-            for interface in interfaces:
-                print(f">{interface}")
+            if interfaces:
+                for interface in interfaces:
+                    print(f">{interface}")
+            else:
+                print(f"No interfaces found in PDB {pdb_id}")
                 
         except Exception as e:
             print(f"Error processing PDB {pdb_id}: {str(e)}")
