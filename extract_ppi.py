@@ -140,7 +140,7 @@ def extract_ppi(pdb_file, distance_threshold=5):
                 res_name = residue.get_resname()
                 chain2_hotspots.append(f"{res_name}{res_id}")
             
-            formatted_interface = f"{chain1_id}_{chain2_id}|{pdb_file}|EXP_{exp_method}|{' '.join(chain1_hotspots)}|{' '.join(chain2_hotspots)}"
+            formatted_interface = f"{chain1_id}_{chain2_id}|{pdb_file}|METHOD_{exp_method}|{' '.join(chain1_hotspots)}|{' '.join(chain2_hotspots)}"
             formatted_interfaces.append(formatted_interface)
         
         return formatted_interfaces
@@ -369,7 +369,7 @@ def confirm_experimental_binding_and_add_interface(target_name, pdb_dir='./pdbs'
                     partner_chain = chains[1] if chains[0] == chain_id else chains[0]
                     
                     # Get the experimental method
-                    exp_method = interface_parts[2].replace('EXP_', '')
+                    exp_method = interface_parts[2].replace('METHOD_', '')
                     
                     # Get the hotspot residues
                     if chains[0] == chain_id:
@@ -381,9 +381,9 @@ def confirm_experimental_binding_and_add_interface(target_name, pdb_dir='./pdbs'
                     
                     # Create updated entry with protein name followed by interface information
                     if protein_name:
-                        updated_id = f"{pdb_chain}|{pdb_id}|{chain_id}|{protein_name}|EXP_{exp_method}|{partner_hotspots}|{chain_hotspots}"
+                        updated_id = f"{pdb_chain}|{pdb_id}|{chain_id}|{protein_name}|METHOD_{exp_method}|{partner_hotspots}|{chain_hotspots}"
                     else:
-                        updated_id = f"{pdb_chain}|{pdb_id}|{chain_id}|EXP_{exp_method}|{partner_hotspots}|{chain_hotspots}"
+                        updated_id = f"{pdb_chain}|{pdb_id}|{chain_id}|METHOD_{exp_method}|{partner_hotspots}|{chain_hotspots}"
                     
                     updated_entries[record_id] = (updated_id, sequence)
                     interface_found = True
