@@ -414,45 +414,40 @@ def confirm_experimental_binding_and_add_interface(target_name, pdb_dir='./pdbs'
 
 def main():
     parser = argparse.ArgumentParser(description='Extract protein-protein interfaces from PDB structures')
-    parser.add_argument('--mode', type=str, choices=['ppi', 'retrieve_binders', 'confirm_binding'],
-                        default='ppi', help='Mode of operation')
     parser.add_argument('--pdb_id', type=str, help='PDB identifier (for ppi mode)')
-    parser.add_argument('--target_seq', type=str, help='Target sequence file (for retrieve_binders mode)')
-    parser.add_argument('--target_name', type=str, help='Target name (for retrieve_binders and confirm_binding modes)')
-    parser.add_argument('--pdb_seqres_db', type=str, help='Path to PDB sequence database (for retrieve_binders mode)')
     parser.add_argument('--pdb_dir', type=str, default='./pdbs', 
                         help='Directory to store PDB files (default: ./pdbs)')
     parser.add_argument('--distance', type=float, default=2.5,
                         help='Distance threshold for interface detection in Angstroms (default: 2.5)')
-    parser.add_argument('--min_seq_id', type=float, default=0.5,
-                        help='Minimum sequence identity for mmseqs (default: 0.5)')
     
     args = parser.parse_args()
     
-    if args.mode == 'ppi':
-        if not args.pdb_id:
-            parser.error("--pdb_id is required when mode is 'ppi'")
+    
+    if not args.pdb_id:
+        parser.error("--pdb_id is required when mode is 'ppi'")
+    
+    # Create PDB directory if it doesn't exist
+    pdb_dir = Path(args.pdb_dir)
+    pdb_dir.mkdir(exist_ok=True)
+    
+    pdb_id = args.pdb_id.upper()
+    
+    try:
+        # Pass the pdb_dir to the download function
+        pdb_file = download_pdb(pdb_id, str(pdb_dir))
+        interfaces = extract_ppi(pdb_file, distance_threshold=args.distance)
         
-        # Create PDB directory if it doesn't exist
-        pdb_dir = Path(args.pdb_dir)
-        pdb_dir.mkdir(exist_ok=True)
-        
-        pdb_id = args.pdb_id.upper()
-        
-        try:
-            # Pass the pdb_dir to the download function
-            pdb_file = download_pdb(pdb_id, str(pdb_dir))
-            interfaces = extract_ppi(pdb_file, distance_threshold=args.distance)
+        if interfaces:
+            for interface in interfaces:
+                print(f">{interface}")
+        else:
+            print(f"No interfaces found in PDB {pdb_id}")
             
-            if interfaces:
-                for interface in interfaces:
-                    print(f">{interface}")
-            else:
-                print(f"No interfaces found in PDB {pdb_id}")
-                
-        except Exception as e:
-            print(f"Error processing PDB {pdb_id}: {str(e)}")
-            sys.exit(1)
+    except Exception as e:
+        print(f"Error processing PDB {pdb_id}: {str(e)}")
+        sys.exit(1)
+        
+    """
     
     elif args.mode == 'retrieve_binders':
         if not args.target_seq or not args.target_name or not args.pdb_seqres_db:
@@ -482,6 +477,8 @@ def main():
         )
         
         print(f"Updated complexes file with interface information: {output_file}")
+    """
 
+        
 if __name__ == "__main__":
     main()

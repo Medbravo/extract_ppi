@@ -15,28 +15,26 @@ pip install -r requirements.txt
 
 ## Basic PPI Extraction
 
-Extract protein-protein interfaces from a PDB structure:
+Extract protein-protein interfaces from a PDB structure. If not in the pdb_dir, the script will download it.
+
+Example:
 
 ```bash
-python extract_ppi.py --mode ppi --pdb_id PDB_ID [options]
+python extract_ppi.py --pdb_id 2gs6 --pdb_dir in/ --distance 5
+# Extract interfaces from PDB ID 1NQL
+python extract_ppi.py --pdb_id 1NQL --distance 2.5
 ```
 
 ### Arguments
 
-- `--mode ppi`: Run in PPI extraction mode (required)
 - `--pdb_id`: The 4-character PDB identifier (required)
 
 ### Options
 
-- `--pdb_dir PATH`: Directory to store PDB files (default: ./pdbs)
+- `--pdb_dir PATH`: Directory to store PDB files or where it is expected to have the PDB (default: ./pdbs)
 - `--distance FLOAT`: Distance threshold for interface detection in Angstroms (default: 2.5)
 
-### Example
 
-```bash
-# Extract interfaces from PDB ID 1NQL
-python extract_ppi.py --mode ppi --pdb_id 1NQL --distance 2.5
-```
 
 ## Pipeline Complex Retrieval
 
@@ -70,28 +68,6 @@ python pipeline_complex_retrieval.py \
   --target_seq in/egfr_cropped.fasta \
   --target_name egfr \
   --pdb_seqres_db in/pdb_seqres_db
-```
-
-### Running Individual Steps
-
-You can also run individual steps of the pipeline:
-
-#### 1. Retrieve Binders from PDB
-
-```bash
-python extract_ppi.py --mode retrieve_binders \
-  --target_seq in/egfr_cropped.fasta \
-  --target_name egfr \
-  --pdb_seqres_db in/pdb_seqres_db
-```
-
-#### 2. Confirm Experimental Binding and Extract Interfaces
-
-```bash
-python extract_ppi.py --mode confirm_binding \
-  --target_name egfr \
-  --pdb_dir ./pdbs \
-  --distance 2.5
 ```
 
 ## Output Format
