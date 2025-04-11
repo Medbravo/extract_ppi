@@ -11,6 +11,7 @@ from Bio.PDB.PDBList import PDBList
 from Bio import SeqIO
 import subprocess
 import re
+import datetime
 
 def download_pdb(pdb_id, pdb_dir):
     """Download PDB file from the PDB database if not already present."""
@@ -43,6 +44,22 @@ def get_experimental_method(structure):
         return header['structure_method']
     return "UNKNOWN"
 
+def get_deposition_date(structure):
+    """Get the deposition date from the PDB file."""
+    header = structure.header
+    if 'deposition_date' in header:
+        return header['deposition_date']
+    return "UNKNOWN"
+
+def get_quality_score(structure):
+    """Get quality score from the PDB file (resolution for X-ray, etc.)"""
+    header = structure.header
+    if 'resolution' in header and header['resolution'] is not None:
+        return f"{header['resolution']:.2f}"
+    elif 'resolution' in header:
+        return "NA"
+    return "NA"
+
 def extract_ppi(pdb_file, distance_threshold=5):
     """Extract protein-protein interface residues based on distance threshold."""
     # Use the appropriate parser based on file extension
@@ -57,6 +74,10 @@ def extract_ppi(pdb_file, distance_threshold=5):
         
         # Get experimental method
         exp_method = get_experimental_method(structure)
+        
+        # Get deposition date and quality score
+        deposition_date = get_deposition_date(structure)
+        quality_score = get_quality_score(structure)
         
         # Create a dictionary to hold chains and their atoms
         chain_atoms = {}
@@ -140,7 +161,8 @@ def extract_ppi(pdb_file, distance_threshold=5):
                 res_name = residue.get_resname()
                 chain2_hotspots.append(f"{res_name}{res_id}")
             
-            formatted_interface = f"{chain1_id}_{chain2_id}|{pdb_file}|METHOD_{exp_method}|{' '.join(chain1_hotspots)}|{' '.join(chain2_hotspots)}"
+            # Add deposition date and quality score to the output - don't add prefixes here, they'll be added later
+            formatted_interface = f"{chain1_id}_{chain2_id}|{pdb_file}|{deposition_date}|{quality_score}|METHOD_{exp_method}|{' '.join(chain1_hotspots)}|{' '.join(chain2_hotspots)}"
             formatted_interfaces.append(formatted_interface)
         
         return formatted_interfaces
@@ -368,22 +390,26 @@ def confirm_experimental_binding_and_add_interface(target_name, pdb_dir='./pdbs'
                     # Get the partner chain
                     partner_chain = chains[1] if chains[0] == chain_id else chains[0]
                     
-                    # Get the experimental method
-                    exp_method = interface_parts[2].replace('METHOD_', '')
+                    # Get the deposition date and quality score - don't remove prefixes here
+                    deposition_date = interface_parts[2]
+                    quality_score = interface_parts[3]
+                    
+                    # Get the experimental method - remove METHOD_ prefix
+                    exp_method = interface_parts[4].replace('METHOD_', '')
                     
                     # Get the hotspot residues
                     if chains[0] == chain_id:
-                        chain_hotspots = interface_parts[3]
-                        partner_hotspots = interface_parts[4]
+                        chain_hotspots = interface_parts[5]
+                        partner_hotspots = interface_parts[6]
                     else:
-                        chain_hotspots = interface_parts[4]
-                        partner_hotspots = interface_parts[3]
+                        chain_hotspots = interface_parts[6]
+                        partner_hotspots = interface_parts[5]
                     
-                    # Create updated entry with protein name followed by interface information
+                    # Create updated entry with protein name followed by interface information - add prefixes
                     if protein_name:
-                        updated_id = f"{pdb_chain}|{pdb_id}|{chain_id}|{protein_name}|METHOD_{exp_method}|{partner_hotspots}|{chain_hotspots}"
+                        updated_id = f"{pdb_chain}|{pdb_id}|{protein_name}|DATE_{deposition_date}|SCORE_{quality_score}|METHOD_{exp_method}|{partner_hotspots}|{chain_hotspots}"
                     else:
-                        updated_id = f"{pdb_chain}|{pdb_id}|{chain_id}|METHOD_{exp_method}|{partner_hotspots}|{chain_hotspots}"
+                        updated_id = f"{pdb_chain}|{pdb_id}|DATE_{deposition_date}|SCORE_{quality_score}|METHOD_{exp_method}|{partner_hotspots}|{chain_hotspots}"
                     
                     updated_entries[record_id] = (updated_id, sequence)
                     interface_found = True
@@ -392,17 +418,17 @@ def confirm_experimental_binding_and_add_interface(target_name, pdb_dir='./pdbs'
             # If no interface was found, keep the original entry with protein name
             if not interface_found:
                 if protein_name:
-                    updated_entries[record_id] = (f"{pdb_chain}|{pdb_id}|{chain_id}|{protein_name}", sequence)
+                    updated_entries[record_id] = (f"{pdb_chain}|{pdb_id}|{protein_name}|DATE_UNKNOWN|SCORE_NA", sequence)
                 else:
-                    updated_entries[record_id] = (record_id, sequence)
+                    updated_entries[record_id] = (f"{pdb_chain}|{pdb_id}|DATE_UNKNOWN|SCORE_NA", sequence)
                 
         except Exception as e:
             print(f"Error processing PDB {pdb_id}: {str(e)}")
             # Keep the original entry if there's an error
             if protein_name:
-                updated_entries[record_id] = (f"{pdb_chain}|{pdb_id}|{chain_id}|{protein_name}", sequence)
+                updated_entries[record_id] = (f"{pdb_chain}|{pdb_id}|{protein_name}|DATE_UNKNOWN|SCORE_NA", sequence)
             else:
-                updated_entries[record_id] = (record_id, sequence)
+                updated_entries[record_id] = (f"{pdb_chain}|{pdb_id}|DATE_UNKNOWN|SCORE_NA", sequence)
     
     # Write updated entries to output file
     with open(input_fasta, 'w') as outfile:
@@ -439,7 +465,14 @@ def main():
         
         if interfaces:
             for interface in interfaces:
-                print(f">{interface}")
+                # Add DATE_ and SCORE_ prefixes to the fields
+                parts = interface.split('|')
+                date = parts[2]
+                score = parts[3]
+                parts[2] = f"DATE_{date}"
+                parts[3] = f"SCORE_{score}"
+                formatted_interface = "|".join(parts)
+                print(f">{formatted_interface}")
         else:
             print(f"No interfaces found in PDB {pdb_id}")
             
@@ -447,38 +480,7 @@ def main():
         print(f"Error processing PDB {pdb_id}: {str(e)}")
         sys.exit(1)
         
-    """
     
-    elif args.mode == 'retrieve_binders':
-        if not args.target_seq or not args.target_name or not args.pdb_seqres_db:
-            parser.error("--target_seq, --target_name, and --pdb_seqres_db are required when mode is 'retrieve_binders'")
-        
-        output_file = retrieve_binders_fromPDB(
-            args.target_seq,
-            args.target_name,
-            args.pdb_seqres_db,
-            min_seq_id=args.min_seq_id
-        )
-        
-        if output_file:
-            print(f"Binder sequences written to: {output_file}")
-        else:
-            print("Failed to retrieve binders")
-            sys.exit(1)
-    
-    elif args.mode == 'confirm_binding':
-        if not args.target_name:
-            parser.error("--target_name is required when mode is 'confirm_binding'")
-        
-        output_file = confirm_experimental_binding_and_add_interface(
-            args.target_name,
-            pdb_dir=args.pdb_dir,
-            distance_threshold=args.distance
-        )
-        
-        print(f"Updated complexes file with interface information: {output_file}")
-    """
-
         
 if __name__ == "__main__":
     main()
