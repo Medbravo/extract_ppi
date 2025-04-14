@@ -440,27 +440,62 @@ def confirm_experimental_binding_and_add_interface(target_name, pdb_dir='./pdbs'
 
 def main():
     parser = argparse.ArgumentParser(description='Extract protein-protein interfaces from PDB structures')
-    parser.add_argument('--pdb_id', type=str, help='PDB identifier (for ppi mode)')
+    
+    # Mutually exclusive group for input source
+    input_group = parser.add_mutually_exclusive_group(required=True)
+    input_group.add_argument('--input', type=str, 
+                             help='PDB identifier or path to a PDB/CIF file')
+    input_group.add_argument('--pdb_id', type=str, 
+                             help='PDB identifier (for backwards compatibility)')
+
     parser.add_argument('--pdb_dir', type=str, default='./pdbs', 
-                        help='Directory to store PDB files (default: ./pdbs)')
+                        help='Directory to store PDB files if downloading (default: ./pdbs)')
     parser.add_argument('--distance', type=float, default=2.5,
                         help='Distance threshold for interface detection in Angstroms (default: 2.5)')
     
     args = parser.parse_args()
     
-    
-    if not args.pdb_id:
-        parser.error("--pdb_id is required when mode is 'ppi'")
-    
-    # Create PDB directory if it doesn't exist
+    # Create PDB directory if it doesn't exist (used for downloads)
     pdb_dir = Path(args.pdb_dir)
     pdb_dir.mkdir(exist_ok=True)
     
-    pdb_id = args.pdb_id
-    
+    pdb_file = None
+    pdb_id_for_reporting = "UNKNOWN"
+    input_source_description = ""
+
     try:
-        # Pass the pdb_dir to the download function
-        pdb_file = download_pdb(pdb_id, str(pdb_dir))
+        if args.pdb_id:
+            # Handle --pdb_id (backwards compatibility)
+            pdb_id = args.pdb_id
+            pdb_id_for_reporting = pdb_id
+            input_source_description = f"PDB ID: {pdb_id}"
+            print(f"Processing PDB ID (using --pdb_id): {pdb_id}")
+            # Pass the pdb_dir to the download function
+            pdb_file = download_pdb(pdb_id, str(pdb_dir))
+        
+        elif args.input:
+            # Handle --input (file path or PDB ID)
+            input_source_description = f"input: {args.input}"
+            input_path = Path(args.input)
+            if input_path.is_file():
+                print(f"Using local PDB file: {input_path}")
+                pdb_file = str(input_path)
+                # Use the filename stem as the ID for reporting
+                pdb_id_for_reporting = input_path.stem 
+            else:
+                # Assume it's a PDB ID and try to download
+                pdb_id = args.input
+                pdb_id_for_reporting = pdb_id
+                print(f"Input '{args.input}' not found as file, assuming PDB ID: {pdb_id}")
+                # Pass the pdb_dir to the download function
+                pdb_file = download_pdb(pdb_id, str(pdb_dir))
+        else:
+             # This case should not be reached due to the required mutually exclusive group
+             parser.error("Either --input or --pdb_id must be provided.")
+
+        if not pdb_file or not Path(pdb_file).exists():
+             raise FileNotFoundError(f"Could not find or download PDB from source: {input_source_description}")
+
         interfaces = extract_ppi(pdb_file, distance_threshold=args.distance)
         
         if interfaces:
@@ -471,13 +506,15 @@ def main():
                 score = parts[3]
                 parts[2] = f"DATE_{date}"
                 parts[3] = f"SCORE_{score}"
+                # Use the determined pdb_id_for_reporting in the output
+                parts[1] = pdb_id_for_reporting 
                 formatted_interface = "|".join(parts)
                 print(f">{formatted_interface}")
         else:
-            print(f"No interfaces found in PDB {pdb_id}")
+            print(f"No interfaces found in PDB source: {input_source_description}")
             
     except Exception as e:
-        print(f"Error processing PDB {pdb_id}: {str(e)}")
+        print(f"Error processing PDB source '{input_source_description}': {str(e)}")
         sys.exit(1)
         
     
