@@ -456,7 +456,7 @@ def main():
     pdb_dir = Path(args.pdb_dir)
     pdb_dir.mkdir(exist_ok=True)
     
-    pdb_id = args.pdb_id.upper()
+    pdb_id = args.pdb_id
     
     try:
         # Pass the pdb_dir to the download function
