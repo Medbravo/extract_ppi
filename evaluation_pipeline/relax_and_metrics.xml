@@ -1,0 +1,52 @@
+<ROSETTASCRIPTS>
+    <SCOREFXNS>
+        <ScoreFunction name="ref2015" weights="ref2015"/>
+    </SCOREFXNS>
+    <RESIDUE_SELECTORS>
+        <!-- Select individual chains -->
+        <Chain name="chainA" chains="A"/>
+        <Chain name="chainB" chains="B"/>
+
+        <!-- Define interface residues between chainA and chainB -->
+        <InterfaceByVector name="interface_residues">
+            <Chain chains="A"/>
+            <Chain chains="B"/>
+        </InterfaceByVector>
+    </RESIDUE_SELECTORS>
+    <TASKOPERATIONS>
+        <OperateOnResidueSubset name="restrict_to_interface" selector="interface_residues">
+            <RestrictToRepackingRLT/>
+        </OperateOnResidueSubset>
+        <InitializeFromCommandline name="init_cmd"/>
+    </TASKOPERATIONS>
+    <MOVERS>
+        <FastRelax name="fast_relax" scorefxn="ref2015" task_operations="init_cmd">
+            <!-- Optionally add task_operations="restrict_to_interface" if you only want to relax the interface -->
+            <!-- <MoveMap name="mm">
+                <Chain number="1" chi="true" bb="true"/>
+                <Chain number="2" chi="true" bb="true"/>
+            </MoveMap> -->
+        </FastRelax>
+        <InterfaceAnalyzerMover name="interface_analyzer"
+                               scorefxn="ref2015"
+                               pack_separated="true"
+                               interface="A_B"
+                               interface_sc="true"
+                               packstat="1"/>
+
+        <!-- Calculate binding ΔΔG (ddG) -->
+        <ddG name="ddg_mover"
+             scorefxn="ref2015"
+             chain_num="1,2"
+             repack_unbound="true"
+             repack_bound="true"
+             relax_bound="false"/>
+        <!-- The DAlphaBall mover for shape complementarity is often implicitly handled by InterfaceAnalyzer or specific options. If direct DAlphaBall output is needed, it's usually a separate execution or specific flag. The `dalphaball` path you provided is for the standalone executable. -->
+    </MOVERS>
+    <PROTOCOLS>
+        <Add mover_name="fast_relax"/>
+        <Add mover_name="interface_analyzer"/>
+        <Add mover_name="ddg_mover"/>
+    </PROTOCOLS>
+    <OUTPUT scorefxn="ref2015"/>
+</ROSETTASCRIPTS>
