@@ -23,8 +23,19 @@ ROSETTA_BIN="/home/auri/Rosetta/rosetta.source.release-371/main/source/bin/roset
 ROSETTA_DB="/home/auri/Rosetta/rosetta.source.release-371/main/database"
 DALPHABALL_EXEC="/home/auri/Rosetta/rosetta.source.release-371/main/source/external/DAlphaBall/DAlphaBall.gcc"
 XML_SCRIPT="/home/auri/Rosetta/relax_and_metrics.xml"           # full path so worker node can find it
-PDB_DIR="/home/auri/extract_ppi/in/EGFR_ECD/1746470428303-2758-312e7774_job_5XWD_24_affibodies_any_hotspot"  # directory with input complexes
-OUTPUT_ROOT="/home/auri/Rosetta/output/relax_metrics_$(date +%Y%m%d)"  # all runs for this submission
+
+# PDB directory is now provided as the first positional argument when you
+# submit the job, e.g.:
+#   sbatch --array=1-$(ls my_pdbs/*.pdb | wc -l) relax_metrics_array.slurm my_pdbs
+#
+# Exit with a helpful message if missing.
+if [[ $# -lt 1 ]]; then
+    echo "Usage: sbatch [--array=...] relax_metrics_array.slurm <PDB_DIR>" >&2
+    exit 1
+fi
+
+PDB_DIR="$1"                                 # directory with input complexes
+OUTPUT_ROOT="$PDB_DIR/relax_metrics_$(date +%Y%m%d)"  # all runs for this submission
 NSTRUCT=1                 # number of output models per input structure
 
 ###########################################################################
