@@ -12,6 +12,7 @@ from Bio import SeqIO
 import subprocess
 import re
 import datetime
+import json
 
 def download_pdb(pdb_id, pdb_dir):
     """Download PDB file from the PDB database if not already present."""
@@ -60,13 +61,23 @@ def get_quality_score(structure):
         return "NA"
     return "NA"
 
-def extract_ppi(pdb_file, distance_threshold=5):
-    """Extract protein-protein interface residues based on distance threshold."""
+def extract_ppi(pdb_file, distance_threshold=5, contact_probs_json=None, threshold_probability_contact=0.7):
+    """Extract protein-protein interface residues based on distance threshold and optionally filter by contact probabilities."""
     # Use the appropriate parser based on file extension
     if pdb_file.lower().endswith('.cif'):
         parser = MMCIFParser(QUIET=True)
     else:
         parser = PDBParser(QUIET=True)
+        
+    # Load contact probability data if provided
+    contact_prob_data = None
+    if contact_probs_json:
+        try:
+            with open(contact_probs_json, 'r') as f:
+                contact_prob_data = json.load(f)
+        except Exception as e:
+            print(f"Warning: Could not load contact probabilities from {contact_probs_json}: {e}")
+            contact_prob_data = None
         
     try:
         structure = parser.get_structure("complex", pdb_file)
@@ -141,6 +152,12 @@ def extract_ppi(pdb_file, distance_threshold=5):
                             res2_id = residue2.get_id()[1]
                             chain_interfaces[interface_key]["chain2"].add(res2_id)
         
+        # Apply contact probability filtering if data is available
+        if contact_prob_data:
+            chain_interfaces = filter_interfaces_by_contact_probs(
+                chain_interfaces, contact_prob_data, threshold_probability_contact
+            )
+        
         # Format the interfaces for output
         formatted_interfaces = []
         
@@ -169,6 +186,105 @@ def extract_ppi(pdb_file, distance_threshold=5):
     except Exception as e:
         print(f"Error parsing file {pdb_file}: {e}")
         return []
+
+def filter_interfaces_by_contact_probs(chain_interfaces, contact_prob_data, threshold_probability_contact):
+    """Filter interface residues based on contact probabilities from JSON data."""
+    try:
+        contact_probs = np.array(contact_prob_data['contact_probs'])
+        token_chain_ids = contact_prob_data['token_chain_ids']
+        token_res_ids = contact_prob_data['token_res_ids']
+        
+        # Find unique chains in the contact probability data
+        unique_chains = sorted(set(token_chain_ids))
+        if len(unique_chains) < 2:
+            print("Warning: Less than 2 chains found in contact probability data")
+            return chain_interfaces
+            
+        # Create masks for each chain
+        chain_masks = {}
+        chain_res_ids = {}
+        for chain_id in unique_chains:
+            mask = np.array(token_chain_ids) == chain_id
+            chain_masks[chain_id] = mask
+            chain_res_ids[chain_id] = np.array(token_res_ids)[mask]
+        
+        # Filter each interface
+        filtered_interfaces = {}
+        
+        for interface_key, interface in chain_interfaces.items():
+            chain1_id, chain2_id = interface_key.split("_")
+            
+            # Map PDB chain IDs to contact probability chain IDs
+            # This assumes the chain IDs match, but you might need to adjust this mapping
+            prob_chain1_id = None
+            prob_chain2_id = None
+            
+            # Try to find matching chains in contact probability data
+            for prob_chain_id in unique_chains:
+                if prob_chain_id == chain1_id or (len(unique_chains) == 2 and prob_chain1_id is None):
+                    prob_chain1_id = prob_chain_id
+                elif prob_chain_id == chain2_id or (len(unique_chains) == 2 and prob_chain2_id is None):
+                    prob_chain2_id = prob_chain_id
+            
+            # If we have exactly 2 chains and haven't assigned them yet, assign them
+            if len(unique_chains) == 2 and prob_chain1_id is None:
+                prob_chain1_id = unique_chains[0]
+                prob_chain2_id = unique_chains[1]
+            elif len(unique_chains) == 2 and prob_chain2_id is None:
+                prob_chain2_id = unique_chains[1] if prob_chain1_id == unique_chains[0] else unique_chains[0]
+            
+            if prob_chain1_id is None or prob_chain2_id is None:
+                print(f"Warning: Could not map chains {chain1_id}, {chain2_id} to contact probability data")
+                filtered_interfaces[interface_key] = interface
+                continue
+            
+            # Get masks and residue IDs for both chains
+            mask1 = chain_masks[prob_chain1_id]
+            mask2 = chain_masks[prob_chain2_id]
+            res_ids1 = chain_res_ids[prob_chain1_id]
+            res_ids2 = chain_res_ids[prob_chain2_id]
+            
+            # Calculate maximum contact probabilities for each chain
+            max_probs1 = np.max(contact_probs[mask1][:, mask2], axis=1)
+            max_probs2 = np.max(contact_probs[mask2][:, mask1], axis=1)
+            
+            # Find residues above threshold
+            interface_indices1 = np.where(max_probs1 > threshold_probability_contact)[0]
+            interface_indices2 = np.where(max_probs2 > threshold_probability_contact)[0]
+            
+            # Get the actual residue IDs that pass the threshold
+            filtered_res_ids1 = set(res_ids1[interface_indices1])
+            filtered_res_ids2 = set(res_ids2[interface_indices2])
+            
+            # Apply window expansion (similar to extract_interface_indices)
+            window_size = 0 #restrict to no window expansion
+            expanded_res_ids1 = set()
+            expanded_res_ids2 = set()
+            
+            for res_id in filtered_res_ids1:
+                for w in range(res_id - window_size, res_id + window_size + 1):
+                    if min(res_ids1) <= w <= max(res_ids1):
+                        expanded_res_ids1.add(w)
+            
+            for res_id in filtered_res_ids2:
+                for w in range(res_id - window_size, res_id + window_size + 1):
+                    if min(res_ids2) <= w <= max(res_ids2):
+                        expanded_res_ids2.add(w)
+            
+            # Filter the original interface residues
+            filtered_chain1 = interface["chain1"].intersection(expanded_res_ids1)
+            filtered_chain2 = interface["chain2"].intersection(expanded_res_ids2)
+            
+            filtered_interfaces[interface_key] = {
+                "chain1": filtered_chain1,
+                "chain2": filtered_chain2
+            }
+        
+        return filtered_interfaces
+        
+    except Exception as e:
+        print(f"Error filtering interfaces by contact probabilities: {e}")
+        return chain_interfaces
 
 def retrieve_binders_fromPDB(target_seq_file, target_name, pdb_seqres_db, min_seq_id=0.5, cov_mode=2, cov_threshold=0):
     """
@@ -300,7 +416,7 @@ def retrieve_binders_fromPDB(target_seq_file, target_name, pdb_seqres_db, min_se
     
     return str(output_fasta)
 
-def confirm_experimental_binding_and_add_interface(target_name, pdb_dir='./pdbs', distance_threshold=2.5):
+def confirm_experimental_binding_and_add_interface(target_name, pdb_dir='./pdbs', distance_threshold=2.5, contact_probs_json=None, threshold_probability_contact=0.7):
     """
     Confirm experimental binding and add interface information to the protein complexes file.
     
@@ -308,6 +424,8 @@ def confirm_experimental_binding_and_add_interface(target_name, pdb_dir='./pdbs'
         target_name: Name of the target protein (e.g., 'egfr')
         pdb_dir: Directory to store PDB files
         distance_threshold: Distance threshold for interface detection in Angstroms
+        contact_probs_json: Path to JSON file containing contact probabilities for filtering
+        threshold_probability_contact: Threshold for contact probability filtering
         
     Returns:
         Path to the updated fasta file
@@ -377,7 +495,9 @@ def confirm_experimental_binding_and_add_interface(target_name, pdb_dir='./pdbs'
             pdb_file = download_pdb(pdb_id, str(pdb_dir_path))
             
             # Extract interfaces
-            interfaces = extract_ppi(pdb_file, distance_threshold=distance_threshold)
+            interfaces = extract_ppi(pdb_file, distance_threshold=distance_threshold, 
+                                    contact_probs_json=contact_probs_json, 
+                                    threshold_probability_contact=threshold_probability_contact)
             
             # Find interfaces involving this chain
             interface_found = False
@@ -444,7 +564,7 @@ def main():
     # Mutually exclusive group for input source
     input_group = parser.add_mutually_exclusive_group(required=True)
     input_group.add_argument('--input', type=str, 
-                             help='PDB identifier or path to a PDB/CIF file')
+                             help='PDB identifier, path to a PDB/CIF file, or directory containing CIF and optionally confidences.json')
     input_group.add_argument('--pdb_id', type=str, 
                              help='PDB identifier (for backwards compatibility)')
 
@@ -452,6 +572,10 @@ def main():
                         help='Directory to store PDB files if downloading (default: ./pdbs)')
     parser.add_argument('--distance', type=float, default=2.5,
                         help='Distance threshold for interface detection in Angstroms (default: 2.5)')
+    parser.add_argument('--contact_probs_json', type=str, default=None,
+                        help='Path to JSON file containing contact probabilities for filtering interface residues')
+    parser.add_argument('--threshold_probability_contact', type=float, default=0.9,
+                        help='Threshold for contact probability filtering (default: 0.9)')
     
     args = parser.parse_args()
     
@@ -474,19 +598,53 @@ def main():
             pdb_file = download_pdb(pdb_id, str(pdb_dir))
         
         elif args.input:
-            # Handle --input (file path or PDB ID)
+            # Handle --input (file path, directory, or PDB ID)
             input_source_description = f"input: {args.input}"
             input_path = Path(args.input)
+            
             if input_path.is_file():
                 print(f"Using local PDB file: {input_path}")
                 pdb_file = str(input_path)
                 # Use the filename stem as the ID for reporting
-                pdb_id_for_reporting = input_path.stem 
+                pdb_id_for_reporting = input_path.stem
+                
+            elif input_path.is_dir():
+                print(f"Using directory: {input_path}")
+                # Look for CIF files in the directory
+                cif_files = list(input_path.glob("*.cif"))
+                if not cif_files:
+                    raise FileNotFoundError(f"No CIF files found in directory: {input_path}")
+                
+                # Use the first CIF file found
+                pdb_file = str(cif_files[0])
+                pdb_id_for_reporting = cif_files[0].stem
+                print(f"Found CIF file: {pdb_file}")
+                
+                # Check for confidences.json file in the same directory
+                # Try different naming patterns for confidences files
+                confidences_patterns = [
+                    "confidences.json",
+                    "*confidences.json",
+                    "*_confidences.json"
+                ]
+                
+                confidences_file = None
+                for pattern in confidences_patterns:
+                    matching_files = list(input_path.glob(pattern))
+                    if matching_files:
+                        confidences_file = matching_files[0]
+                        break
+                
+                if confidences_file and args.contact_probs_json is None:
+                    args.contact_probs_json = str(confidences_file)
+                    print(f"Found confidences file: {confidences_file}")
+                    print("Automatically using contact probabilities for filtering")
+                
             else:
                 # Assume it's a PDB ID and try to download
                 pdb_id = args.input
                 pdb_id_for_reporting = pdb_id
-                print(f"Input '{args.input}' not found as file, assuming PDB ID: {pdb_id}")
+                print(f"Input '{args.input}' not found as file or directory, assuming PDB ID: {pdb_id}")
                 # Pass the pdb_dir to the download function
                 pdb_file = download_pdb(pdb_id, str(pdb_dir))
         else:
@@ -496,7 +654,9 @@ def main():
         if not pdb_file or not Path(pdb_file).exists():
              raise FileNotFoundError(f"Could not find or download PDB from source: {input_source_description}")
 
-        interfaces = extract_ppi(pdb_file, distance_threshold=args.distance)
+        interfaces = extract_ppi(pdb_file, distance_threshold=args.distance, 
+                                 contact_probs_json=args.contact_probs_json, 
+                                 threshold_probability_contact=args.threshold_probability_contact)
         
         if interfaces:
             for interface in interfaces:
