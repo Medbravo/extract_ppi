@@ -103,7 +103,31 @@ python pipeline_complex_retrieval.py \
 
 ## Output Format
 
-The output is a FASTA file named `{target_name}_protein_complexes.fasta` with entries in the format:
+The `extract_ppi` tool outputs interface information in the following format:
+
+```
+>{CHAIN1}_{CHAIN2}|{PDB_ID}|DATE_{DATE}|SCORE_{SCORE}|METHOD_{METHOD}|{CHAIN1_HOTSPOTS}|{CHAIN2_HOTSPOTS}|{CHAIN1}_{COUNT1}|{CHAIN2}_{COUNT2}
+```
+
+### Example Output:
+```
+>A_B|1747690647190-4494-65a0dd34_model|DATE_|SCORE_NA|METHOD_|ILE13 ARG17 ASN18 PRO20 ASN23 GLY24 TRP25 MET27 THR28 ILE31 ALA32 PHE35|LEU349 HIS370 LEU372 PRO373 VAL374 LEU406 GLN408 ALA409 HIS433 GLY434 PHE436 ALA439 VAL441 SER442 ILE462 SER464 LYS489 ILE491 SER492|A_12|B_19
+```
+
+### Field Descriptions:
+- `CHAIN1_CHAIN2`: Interface identifier (e.g., A_B)
+- `PDB_ID`: The structure identifier or filename
+- `DATE_`: Deposition date (if available from PDB header)
+- `SCORE_`: Quality score/resolution (if available from PDB header)
+- `METHOD_`: Experimental method used to determine the structure (X-RAY, NMR, etc.)
+- `CHAIN1_HOTSPOTS`: Space-separated list of interface residues from chain 1 (format: RES_NAME + RES_NUMBER)
+- `CHAIN2_HOTSPOTS`: Space-separated list of interface residues from chain 2 (format: RES_NAME + RES_NUMBER)
+- `CHAIN1_COUNT`: Chain 1 identifier and number of hotspot residues (e.g., A_12)
+- `CHAIN2_COUNT`: Chain 2 identifier and number of hotspot residues (e.g., B_19)
+
+### Pipeline Output Format
+
+For the pipeline complex retrieval, the output is a FASTA file named `{target_name}_protein_complexes.fasta` with entries in the format:
 
 ```
 >{PDB_ID}_{CHAIN}|{PDB_ID}|{CHAIN}|EXP_{METHOD}|{TARGET_HOTSPOTS}|{BINDER_HOTSPOTS}

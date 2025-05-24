@@ -179,7 +179,7 @@ def extract_ppi(pdb_file, distance_threshold=5, contact_probs_json=None, thresho
                 chain2_hotspots.append(f"{res_name}{res_id}")
             
             # Add deposition date and quality score to the output - don't add prefixes here, they'll be added later
-            formatted_interface = f"{chain1_id}_{chain2_id}|{pdb_file}|{deposition_date}|{quality_score}|METHOD_{exp_method}|{' '.join(chain1_hotspots)}|{' '.join(chain2_hotspots)}"
+            formatted_interface = f"{chain1_id}_{chain2_id}|{pdb_file}|{deposition_date}|{quality_score}|METHOD_{exp_method}|{' '.join(chain1_hotspots)}|{' '.join(chain2_hotspots)}|{chain1_id}_{len(chain1_hotspots)}|{chain2_id}_{len(chain2_hotspots)}"
             formatted_interfaces.append(formatted_interface)
         
         return formatted_interfaces
